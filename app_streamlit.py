@@ -72,6 +72,109 @@ def get_schema_mapping(df):
     return schema
 
 
+def get_columnas_adicionales_config():
+    """UI para que el usuario seleccione año y columnas mensuales adicionales."""
+    st.subheader("Configuración de columnas adicionales")
+    
+    # Selector de año
+    anio_actual = datetime.now().year
+    anio_seleccionado = st.selectbox(
+        "Seleccionar año para columnas mensuales",
+        options=list(range(2024, 2031)),
+        index=list(range(2024, 2031)).index(anio_actual) if anio_actual <= 2030 else 0
+    )
+    
+    # Columnas mensuales disponibles
+    meses_disponibles = [
+        f"ENERO {anio_seleccionado}",
+        f"FEBRERO {anio_seleccionado}",
+        f"MARZO {anio_seleccionado}",
+        f"ABRIL {anio_seleccionado}",
+        f"MAYO {anio_seleccionado}",
+        f"JUNIO {anio_seleccionado}",
+        f"JULIO {anio_seleccionado}",
+        f"AGOSTO {anio_seleccionado}",
+        f"SEPTIEMBRE {anio_seleccionado}",
+    ]
+    
+    # Columnas de totales
+    columnas_totales = [
+        "TOTAL HIPER",
+        "TOTAL CORRIENTES",
+        "TOTAL CONSOLIDADO"
+    ]
+    
+    todas_columnas = meses_disponibles + columnas_totales
+    
+    columnas_seleccionadas = st.multiselect(
+        "Seleccionar columnas adicionales a incluir en exportación",
+        options=todas_columnas,
+        default=[]
+    )
+    
+    return {
+        "anio": anio_seleccionado,
+        "columnas": columnas_seleccionadas,
+        "meses": [c for c in columnas_seleccionadas if c in meses_disponibles],
+        "totales": [c for c in columnas_seleccionadas if c in columnas_totales]
+    }
+
+
+def agregar_columnas_adicionales(df_resultado, config_cols, df_original, schema):
+    """Agrega las columnas adicionales seleccionadas al DataFrame de resultados."""
+    if not config_cols["columnas"]:
+        return df_resultado
+    
+    df = df_resultado.copy()
+    anio = config_cols["anio"]
+    
+    # Verificar si el df original tiene datos de fecha
+    if schema.get("fecha") and schema.get("total"):
+        df_orig = df_original.copy()
+        df_orig[schema["fecha"]] = pd.to_datetime(df_orig[schema["fecha"]], errors="coerce")
+        df_orig = df_orig.dropna(subset=[schema["fecha"]])
+        
+        # Agregar columnas mensuales
+        for mes_col in config_cols["meses"]:
+            # Extraer número de mes del nombre
+            mes_nombre = mes_col.split()[0]
+            mes_map = {
+                "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4,
+                "MAYO": 5, "JUNIO": 6, "JULIO": 7, "AGOSTO": 8, "SEPTIEMBRE": 9
+            }
+            mes_num = mes_map.get(mes_nombre)
+            
+            if mes_num:
+                # Filtrar datos del mes y año específico
+                mask = (df_orig[schema["fecha"]].dt.year == anio) & \
+                       (df_orig[schema["fecha"]].dt.month == mes_num)
+                total_mes = df_orig.loc[mask, schema["total"]].sum()
+                df[mes_col] = total_mes
+        
+        # Agregar columnas de totales (si hay información de sucursal)
+        if schema.get("sucursal"):
+            for total_col in config_cols["totales"]:
+                if total_col == "TOTAL HIPER":
+                    # Filtrar por sucursales tipo "HIPER" (ajustar según tu lógica)
+                    mask = df_orig[schema["sucursal"]].str.contains("HIPER", case=False, na=False)
+                    df[total_col] = df_orig.loc[mask, schema["total"]].sum()
+                elif total_col == "TOTAL CORRIENTES":
+                    # Filtrar por sucursales en Corrientes (ajustar según tu lógica)
+                    mask = df_orig[schema["sucursal"]].str.contains("CORRIENTES", case=False, na=False)
+                    df[total_col] = df_orig.loc[mask, schema["total"]].sum()
+                elif total_col == "TOTAL CONSOLIDADO":
+                    df[total_col] = df_orig[schema["total"]].sum()
+        else:
+            # Si no hay sucursal, poner totales generales
+            for total_col in config_cols["totales"]:
+                if total_col == "TOTAL CONSOLIDADO":
+                    df[total_col] = df_orig[schema["total"]].sum()
+                else:
+                    df[total_col] = 0  # No se puede calcular sin info de sucursal
+    
+    return df
+
+
 # ===================== ACCIONES =====================
 
 def accion_totales_por_periodo(df, schema, periodo="mes", fecha_inicio=None, fecha_fin=None):
@@ -574,6 +677,9 @@ st.write("Vista previa de datos combinados:", df.head())
 
 schema = get_schema_mapping(df)
 
+# Configuración de columnas adicionales
+config_cols_adicionales = get_columnas_adicionales_config()
+
 # Filtros de fecha para acciones que lo usen
 usar_rango = False
 rango_inicio = None
@@ -624,6 +730,9 @@ if ejecutar and acciones_sel:
                     continue
 
                 if tipo == "tabla":
+                    # Agregar columnas adicionales si están configuradas
+                    if config_cols_adicionales["columnas"]:
+                        res = agregar_columnas_adicionales(res, config_cols_adicionales, df, schema)
                     st.dataframe(res)
                     resultados_para_exportar[nombre_accion] = res
                 elif tipo == "kpi":
@@ -632,13 +741,19 @@ if ejecutar and acciones_sel:
                     if nombre_accion.startswith("Productos únicos"):
                         n, tabla = res
                         st.metric("Cantidad de productos únicos", n)
+                        if config_cols_adicionales["columnas"]:
+                            tabla = agregar_columnas_adicionales(tabla, config_cols_adicionales, df, schema)
                         st.dataframe(tabla)
                         resultados_para_exportar[nombre_accion] = tabla
                     else:
                         top, bottom = res
                         st.write("Top N:")
+                        if config_cols_adicionales["columnas"]:
+                            top = agregar_columnas_adicionales(top, config_cols_adicionales, df, schema)
                         st.dataframe(top)
                         st.write("Bottom N:")
+                        if config_cols_adicionales["columnas"]:
+                            bottom = agregar_columnas_adicionales(bottom, config_cols_adicionales, df, schema)
                         st.dataframe(bottom)
                         resultados_para_exportar[nombre_accion + "_TOP"] = top
                         resultados_para_exportar[nombre_accion + "_BOTTOM"] = bottom
