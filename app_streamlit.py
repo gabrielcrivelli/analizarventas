@@ -523,6 +523,63 @@ def accion_top_bottom(df, schema, nivel="producto", n=10):
     return top, bottom
 
 
+def accion_sumatoria_ventas_mensuales_por_idarticulo(df, schema):
+    """Sumatoria de ventas mensuales por IdArticulo.
+    Mapea cada mes como columna, filtrando por la fecha del Excel fuente.
+    """
+    if not schema["producto"] or not schema["fecha"] or not schema["total"]:
+        return "Requiere IdArticulo, fecha y total."
+    
+    d = df.copy()
+    d[schema["fecha"]] = pd.to_datetime(d[schema["fecha"]], errors="coerce")
+    d = d.dropna(subset=[schema["fecha"]])
+    
+    # Crear columnas de año y mes
+    d["Anio"] = d[schema["fecha"]].dt.year
+    d["Mes"] = d[schema["fecha"]].dt.month
+    d["Mes_Nombre"] = d[schema["fecha"]].dt.strftime("%B").map({
+        "January": "ENERO", "February": "FEBRERO", "March": "MARZO",
+        "April": "ABRIL", "May": "MAYO", "June": "JUNIO",
+        "July": "JULIO", "August": "AGOSTO", "September": "SEPTIEMBRE",
+        "October": "OCTUBRE", "November": "NOVIEMBRE", "December": "DICIEMBRE"
+    })
+    
+    # Crear etiqueta Mes-Año
+    d["Mes_Anio"] = d["Mes_Nombre"] + " " + d["Anio"].astype(str)
+    
+    # Agrupar por IdArticulo y Mes_Anio, sumando el total
+    resultado = d.groupby([schema["producto"], "Mes_Anio"], as_index=False)[schema["total"]].sum()
+    resultado = resultado.rename(columns={schema["producto"]: "IdArticulo", schema["total"]: "Venta"})
+    
+    # Pivotar para que cada mes sea una columna
+    tabla_pivot = resultado.pivot_table(
+        index="IdArticulo",
+        columns="Mes_Anio",
+        values="Venta",
+        aggfunc="sum",
+        fill_value=0
+    ).reset_index()
+    
+    # Reordenar columnas de meses en orden cronológico
+    meses_orden = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+                   "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"]
+    
+    columnas_ordenadas = ["IdArticulo"]
+    for col in tabla_pivot.columns[1:]:
+        # Extraer mes y año de la columna
+        parts = col.split(" ")
+        if len(parts) == 2:
+            mes_nombre, anio = parts
+            if mes_nombre in meses_orden:
+                columnas_ordenadas.append(col)
+    
+    tabla_pivot = tabla_pivot[[c for c in columnas_ordenadas if c in tabla_pivot.columns]]
+    
+    # Agregar columna de TOTAL
+    tabla_pivot["TOTAL"] = tabla_pivot.iloc[:, 1:].sum(axis=1)
+    
+    return tabla_pivot
+
 # ===================== REGISTRO DE ACCIONES =====================
 
 ACCIONES = {
@@ -655,6 +712,11 @@ ACCIONES = {
         "fn": lambda df, schema, **kw: accion_top_bottom(df, schema, "producto", n=10),
         "tipo": "mixto",
         "descripcion": "Top y bottom 10 productos por total facturado.",
+    },
+        "Sumatoria Ventas mensuales por IdArticulo": {
+        "fn": lambda df, schema, **kw: accion_sumatoria_ventas_mensuales_por_idarticulo(df, schema),
+        "tipo": "tabla",
+        "descripcion": "Ventas mensuales agregadas por IdArticulo, con cada mes como columna.",
     },
 }
 
